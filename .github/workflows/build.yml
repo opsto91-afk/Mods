@@ -1,0 +1,25 @@
+# push this project to a repo -> Actions tab -> "build" -> download the artifact.
+name: build
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build arm64-v8a
+        run: |
+          sudo apt-get install -y zip cmake
+          ./build.sh
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: water_mod
+          path: dist/
+  host-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make -C tests run
