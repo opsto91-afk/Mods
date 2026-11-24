@@ -15,7 +15,8 @@ android {
         }
         externalNativeBuild {
             cmake {
-                cppFlags "-std=c++17 -O3"
+                cppFlags "-std=c++17", "-O2", "-fvisibility=hidden"
+                arguments "-DANDROID_STL=c++_static"
             }
         }
         aaptOptions {

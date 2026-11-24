@@ -64,8 +64,23 @@ jobs:
           "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "cmake;3.22.1" 2>&1 | tail -8
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
         working-directory: ai-mentor/android
+        run: |
+          set -o pipefail
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Report build failure details
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import os
+          path = os.path.join(os.environ['RUNNER_TEMP'], 'build.log')
+          if os.path.exists(path):
+              lines = open(path, errors='replace').readlines()
+              selected = [line for line in lines if any(x in line.lower() for x in ['error:', 'what went wrong', 'failed:', 'fatal error', 'cmake error', 'could not', 'failure:', 'symbol'])]
+              text = ''.join(selected[-35:]) or ''.join(lines[-80:])
+              print('::error::' + text[-7500:].replace('%','%25').replace('\r','%0D').replace('\n','%0A'))
+          PY
 
       - name: APK info
         run: |
