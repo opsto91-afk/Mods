@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">AI Mentor</string>
+    <string name="title_activity_main">AI Mentor</string>
+    <string name="package_name">com.opsto91.aimentor</string>
+    <string name="custom_url_scheme">com.opsto91.aimentor</string>
+</resources>

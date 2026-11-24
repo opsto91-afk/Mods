@@ -1,0 +1,15 @@
+#!/bin/sh
+# pre-commit: typecheck + tests — galat commit hone se pehle rokta hai
+# Standalone ai-mentor repo dono jagah chale (repo root ya Mods/ai-mentor subfolder)
+set -e
+if [ -f package.json ]; then
+  :
+elif [ -f ai-mentor/package.json ]; then
+  cd ai-mentor
+else
+  exit 0
+fi
+echo "🔍 pre-commit: typecheck + tests…"
+npm run typecheck --silent
+npm run test --silent
+echo "✅ pre-commit pass"
