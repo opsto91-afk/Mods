@@ -106,3 +106,21 @@ jobs:
           git add -f apk/app-debug.apk apk/BUILD_INFO.txt
           git commit -m "APK build ${GITHUB_SHA::7} (run ${GITHUB_RUN_ID})"
           git push --force origin HEAD:apk-output
+
+      # Release asset = ek-click download link (raw link se mobile pe better UX)
+      - name: Attach APK to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          APK="ai-mentor/android/app/build/outputs/apk/debug/app-debug.apk"
+          NICE="AIMentor-v0.1-debug.apk"
+          cp "$APK" "/tmp/$NICE"
+          TAG="v0.1"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "AI Mentor ${TAG} (debug APK)" \
+              --notes "Personal AI tutor — cloud + local AI, branch chats, diagram stage. Debug-signed."
+          fi
+          gh release upload "$TAG" "/tmp/$NICE" --repo "$GITHUB_REPOSITORY" --clobber
