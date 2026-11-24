@@ -14,26 +14,50 @@ export interface SendOpts {
   overrideText?: string;
 }
 
+/**
+ * Smart provider selector:
+ * - Agar active provider cloud hai par usme apiKey khali hai, to check karo kisi aur cloud provider me apiKey hai kya.
+ * - Agar nahi hai to gguf/local try karo.
+ */
 function pickProvider(s: AppState): Provider {
-  const p = s.settings.providers.find((x) => x.id === s.settings.activeId);
-  if (!p) throw new Error('Koi provider selected nahi hai — Settings kholo.');
-  return p;
+  const active = s.settings.providers.find((x) => x.id === s.settings.activeId);
+  if (active) {
+    if (active.kind === 'cloud' && !active.apiKey.trim()) {
+      const withKey = s.settings.providers.find((x) => x.kind === 'cloud' && x.apiKey.trim());
+      if (withKey) return withKey;
+    }
+    return active;
+  }
+  const firstWithKey = s.settings.providers.find((x) => x.kind === 'cloud' && x.apiKey.trim());
+  if (firstWithKey) return firstWithKey;
+  if (s.settings.providers.length > 0) return s.settings.providers[0];
+  throw new Error('Koi provider selected nahi hai — Settings (⚙) kholo.');
 }
 
-function fallbackProvider(s: AppState): Provider | null {
+function fallbackProvider(s: AppState, primaryId: string): Provider | null {
+  // 1. If primary was gguf/local and failed, fallback to any cloud provider that has an API key
+  const withKey = s.settings.providers.find(
+    (x) => x.id !== primaryId && x.kind === 'cloud' && x.apiKey.trim(),
+  );
+  if (withKey) return withKey;
+
+  // 2. Standard configured fallback (e.g. cloud 429 -> gguf/local)
   if (!s.settings.autoFallback || !s.settings.fallbackId) return null;
   const p = s.settings.providers.find((x) => x.id === s.settings.fallbackId);
-  if (!p || p.id === s.settings.activeId) return null;
+  if (!p || p.id === primaryId) return null;
   return p;
 }
 
-/** history ko chhota rakho — sirf last N + diagram blocks hata ke */
+/** history ko chhota rakho — sirf last N + diagram/note/xray blocks hata ke */
 function slimHistory(msgs: Msg[], max = 12): { role: 'user' | 'assistant'; content: string }[] {
   const out: { role: 'user' | 'assistant'; content: string }[] = [];
   for (const m of msgs.slice(-max)) {
     let content = m.text;
-    // diagram block history me mat bhejo (token + wahi render hota hai stage pe)
-    content = content.replace(/```diagram[\s\S]*?```/g, '[diagram]').trim();
+    content = content
+      .replace(/```diagram[\s\S]*?```/gi, '[diagram]')
+      .replace(/```note[\s\S]*?```/gi, '')
+      .replace(/```xray[\s\S]*?```/gi, '')
+      .trim();
     if (!content) content = '(visual dikha diya gaya)';
     out.push({ role: m.role, content });
   }
@@ -48,8 +72,7 @@ export interface RunResult {
 }
 
 /**
- * Ek message chalata hai: cache check → stream (fallback ke saath) → save.
- * Error throw karta hai, caller UI dikhata hai.
+ * Ek message chalata hai: cache check → stream (smart fallback ke saath) → save.
  */
 export async function runTurn(
   state: AppState,
@@ -84,7 +107,6 @@ export async function runTurn(
 
   const provider = pickProvider(state);
   const system = buildSystemPrompt(promptCtx);
-  // replaceLast: aakhri assistant chhota history se hat jayega — last user message wahi rehta hai
   const baseMsgs = opts.replaceLast ? topic.messages.slice(0, -1) : topic.messages;
   const history = slimHistory(baseMsgs);
 
@@ -108,8 +130,8 @@ export async function runTurn(
   try {
     full = await collect(provider);
   } catch (e) {
-    const fb = fallbackProvider(state);
-    if (fb && isLimitError(e)) {
+    const fb = fallbackProvider(state, provider.id);
+    if (fb && (isLimitError(e) || provider.kind === 'gguf' || provider.kind === 'local')) {
       full = await collect(fb);
       usedProvider = fb.id;
     } else {

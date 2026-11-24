@@ -6,6 +6,7 @@ import { MindPane } from './components/MindPane';
 import { NotesPane } from './components/NotesPane';
 import { SettingsSheet } from './components/SettingsSheet';
 import { extractDiagram, Stage } from './components/Stage';
+import { extractAiMemoryUpdates } from './prompt';
 import { runTurn, SendOpts } from './runner';
 import { useAppState } from './store';
 import { Msg, Pane, uid } from './types';
@@ -83,6 +84,32 @@ export function App() {
         });
       } else {
         dispatch({ t: 'pushMsg', topicId: activeTopic.id, msg: res.assistantMsg });
+      }
+
+      // Live AI Read+Write: apply any ```note``` or ```xray``` blocks emitted by AI
+      const mem = extractAiMemoryUpdates(res.assistantMsg.text);
+      if (mem.notes.length > 0) {
+        const existing = state.notes.trim();
+        const additions = mem.notes
+          .filter((n) => !existing.includes(n))
+          .map((n) => `• ${n}`)
+          .join('\n');
+        if (additions) {
+          dispatch({ t: 'notes', value: existing ? `${existing}\n${additions}` : additions });
+        }
+      }
+      if (mem.xrays.length > 0) {
+        const existingXray = state.xray.trim();
+        const xrayAdd = mem.xrays
+          .filter((x) => !existingXray.includes(x))
+          .map((x) => `• ${x}`)
+          .join('\n');
+        if (xrayAdd) {
+          dispatch({
+            t: 'xray',
+            value: existingXray ? `${existingXray}\n${xrayAdd}` : xrayAdd,
+          });
+        }
       }
 
       if (!res.fromCache) {

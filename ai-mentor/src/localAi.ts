@@ -24,6 +24,14 @@ interface LocalAiPluginSpec {
   deleteModel(opts: { name: string }): Promise<LocalAiState>;
   stop(): Promise<void>;
   generate(opts: { system: string; user: string }): Promise<{ text: string }>;
+  fetchModels(opts: { providerId: string; baseUrl: string; apiKey: string }): Promise<{ models: string[] }>;
+  cloudChat(opts: {
+    providerId: string;
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    messagesJson: string;
+  }): Promise<{ text: string; status: number }>;
   addListener(
     eventName: 'token' | 'status',
     listenerFunc: (data: { text?: string; status?: string }) => void,
@@ -40,90 +48,161 @@ export const isAndroidApp = (): boolean => {
   }
 };
 
-/** ZaphRE se same curated Q4_K_M GGUF catalogue — seedha HTTPS download */
+/** ZaphRE se verified Q4_K_M GGUF direct download URLs */
 export const GGUF_CATALOGUE: { label: string; size: string; url: string }[] = [
   {
-    label: 'Qwen2.5-Coder 0.5B Instruct (Q4_K_M)',
+    label: 'Qwen2.5 Coder 0.5B Q4',
     size: '~400 MB · fastest',
-    url: 'https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf',
+    url: 'https://huggingface.co/bartowski/Qwen2.5-Coder-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M.gguf',
   },
   {
-    label: 'DeepSeek-R1-Distill 1.5B (Q4_K_M)',
+    label: 'DeepSeek R1 Distill 1.5B Q4',
     size: '~1.1 GB · reasoning',
-    url: 'https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf',
+    url: 'https://huggingface.co/tensorblock/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf',
   },
   {
-    label: 'Qwen3 1.7B (Q4_K_M)',
+    label: 'Qwen3 1.7B Q4',
     size: '~1.1 GB · smart + fast',
-    url: 'https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf',
+    url: 'https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf',
   },
   {
-    label: 'Qwen2.5-Coder 3B Instruct (Q4_K_M)',
-    size: '~2.0 GB · balanced',
-    url: 'https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q4_k_m.gguf',
+    label: 'Qwen2.5 Coder 3B Q4',
+    size: '~1.93 GB · balanced',
+    url: 'https://huggingface.co/bartowski/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf',
   },
   {
-    label: 'Qwen3 4B (Q4_K_M)',
+    label: 'Qwen3 4B Q4',
     size: '~2.5 GB · strong',
-    url: 'https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf',
+    url: 'https://huggingface.co/jc-builds/Qwen3-4B-Q4_K_M-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf',
   },
 ];
 
-/** Presets: user sirf provider chunta hai → baseUrl + model auto set, bas API key daale */
-export const CLOUD_PRESETS: { id: string; label: string; baseUrl: string; defaultModel: string; hint: string }[] = [
+export const CLOUD_PRESETS: {
+  id: string;
+  label: string;
+  baseUrl: string;
+  defaultModel: string;
+  suggestedModels: string[];
+  hint: string;
+}[] = [
   {
     id: 'gemini',
-    label: 'Gemini (Google AI Studio — Free)',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    defaultModel: 'gemini-2.0-flash',
-    hint: 'aistudio.google.com/apikey se free key lo',
+    label: 'Google Gemini (AI Studio — Free)',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    defaultModel: 'gemini-2.5-flash',
+    suggestedModels: [
+      'gemini-2.5-flash',
+      'gemini-2.5-pro',
+      'gemini-2.5-flash-lite',
+      'gemini-2.0-flash',
+    ],
+    hint: 'AIza... (aistudio.google.com/apikey)',
   },
   {
     id: 'groq',
     label: 'Groq (Free & Super Fast)',
     baseUrl: 'https://api.groq.com/openai/v1',
     defaultModel: 'llama-3.3-70b-versatile',
-    hint: 'console.groq.com/keys se free key lo',
+    suggestedModels: [
+      'llama-3.3-70b-versatile',
+      'qwen/qwen3-32b',
+      'moonshotai/kimi-k2-instruct',
+      'llama-3.1-8b-instant',
+    ],
+    hint: 'gsk_... (console.groq.com/keys)',
   },
   {
     id: 'openrouter',
-    label: 'OpenRouter (Free models available)',
+    label: 'OpenRouter (All Models)',
     baseUrl: 'https://openrouter.ai/api/v1',
-    defaultModel: 'meta-llama/llama-3.3-70b-instruct:free',
-    hint: 'openrouter.ai/keys se key lo (`:free` models 0 cost)',
+    defaultModel: 'google/gemini-2.5-flash',
+    suggestedModels: [
+      'google/gemini-2.5-flash',
+      'meta-llama/llama-3.3-70b-instruct:free',
+      'deepseek/deepseek-chat-v3-0324:free',
+      'openai/gpt-4o-mini',
+    ],
+    hint: 'sk-or-v1-... (openrouter.ai/keys)',
   },
   {
     id: 'openai',
     label: 'OpenAI (ChatGPT API)',
     baseUrl: 'https://api.openai.com/v1',
     defaultModel: 'gpt-4o-mini',
-    hint: 'platform.openai.com/api-keys',
+    suggestedModels: ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4.1', 'gpt-4o'],
+    hint: 'sk-... (platform.openai.com)',
   },
   {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
     defaultModel: 'deepseek-chat',
-    hint: 'platform.deepseek.com',
-  },
-  {
-    id: 'custom',
-    label: 'Custom OpenAI-compatible URL',
-    baseUrl: '',
-    defaultModel: '',
-    hint: 'Koi bhi /v1 endpoint + key',
+    suggestedModels: ['deepseek-chat', 'deepseek-reasoner'],
+    hint: 'sk-... (platform.deepseek.com)',
   },
 ];
 
-/** API key + baseUrl se available models ki list fetch karo (`GET {baseUrl}/models`) */
-export async function fetchProviderModels(baseUrl: string, apiKey: string): Promise<string[]> {
-  const base = baseUrl.replace(/\/+$/, '');
-  if (!base || base.startsWith('local://')) return [];
-  const headers: Record<string, string> = {};
-  if (apiKey.trim()) headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+/** API key ke prefix se provider auto-detect karo */
+export function detectPresetFromKey(apiKey: string) {
+  const k = apiKey.trim();
+  if (k.startsWith('AIza')) return CLOUD_PRESETS.find((p) => p.id === 'gemini') ?? null;
+  if (k.startsWith('gsk_')) return CLOUD_PRESETS.find((p) => p.id === 'groq') ?? null;
+  if (k.startsWith('sk-or-')) return CLOUD_PRESETS.find((p) => p.id === 'openrouter') ?? null;
+  return null;
+}
+
+export function getSuggestedModels(providerId: string, baseUrl: string, apiKey: string): string[] {
+  const detected = detectPresetFromKey(apiKey);
+  if (detected) return detected.suggestedModels;
+  const byId = CLOUD_PRESETS.find(
+    (p) => p.id === providerId || (baseUrl && baseUrl.includes(new URL(p.baseUrl).hostname)),
+  );
+  if (byId) return byId.suggestedModels;
+  if (providerId === 'ollama') return ['llama3.2', 'llama3.2:3b', 'qwen2.5:3b', 'deepseek-r1:1.5b'];
+  return [];
+}
+
+/** API key + baseUrl se available models ki list fetch karo (Native OkHttp on Android + Web fallback) */
+export async function fetchProviderModels(
+  baseUrl: string,
+  apiKey: string,
+  providerId = '',
+): Promise<string[]> {
+  const key = apiKey.trim();
+  if (isAndroidApp()) {
+    const res = await LocalAi.fetchModels({ providerId, baseUrl, apiKey: key });
+    return Array.isArray(res?.models) ? res.models : [];
+  }
+
+  const isGem =
+    providerId === 'gemini' ||
+    baseUrl.includes('generativelanguage.googleapis.com') ||
+    key.startsWith('AIza');
+
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 8000);
+  const t = setTimeout(() => ctrl.abort(), 10000);
   try {
+    if (isGem) {
+      if (!key) throw new Error('Gemini API key (AIza...) daalo');
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}&pageSize=100`,
+        { signal: ctrl.signal },
+      );
+      if (!res.ok) throw new Error(`Gemini HTTP ${res.status}`);
+      const j = await res.json();
+      const list: any[] = Array.isArray(j?.models) ? j.models : [];
+      return list
+        .filter((m) => JSON.stringify(m?.supportedGenerationMethods ?? []).includes('generateContent'))
+        .map((m) => String(m?.name ?? '').replace(/^models\//, ''))
+        .filter((n) => n && !n.includes('embedding'))
+        .sort()
+        .reverse();
+    }
+
+    const base = baseUrl.replace(/\/+$/, '');
+    if (!base || base.startsWith('local://')) return [];
+    const headers: Record<string, string> = {};
+    if (key) headers['Authorization'] = `Bearer ${key}`;
     const res = await fetch(`${base}/models`, { headers, signal: ctrl.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();

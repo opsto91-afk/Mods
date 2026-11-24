@@ -82,9 +82,42 @@ export function buildSystemPrompt(ctx: PromptCtx): string {
 
   lines.push(
     '',
+    'LIVE MEMORY & X-RAY CONTROL (AI read + write):',
+    'Tum user ke Notes aur X-Ray Mind Profile ko padh bhi sakte ho aur live chat me khud update bhi kar sakte ho.',
+    'Jab user ki thinking style, weak point, goal, ya mind trait samajh aaye (ya user bole note/xray save karo), to reply ke aakhir me chhota block jodo:',
+    '```note',
+    '1 line note jo save karna hai',
+    '```',
+    '```xray',
+    'User ke dimag/learning pattern ki live observation (1-2 line)',
+    '```',
+    '',
     'Jawab hamesha chhota rakho. Har reply me ek hi idea. Pura chapter mat barsao.',
   );
   return lines.join('\n');
+}
+
+export interface AiMemoryUpdate {
+  notes: string[];
+  xrays: string[];
+}
+
+/** AI reply me se ```note``` aur ```xray``` blocks nikaalo */
+export function extractAiMemoryUpdates(text: string): AiMemoryUpdate {
+  const notes: string[] = [];
+  const xrays: string[] = [];
+  const noteRe = /```note\s*([\s\S]*?)```/gi;
+  const xrayRe = /```xray\s*([\s\S]*?)```/gi;
+  let m: RegExpExecArray | null;
+  while ((m = noteRe.exec(text)) !== null) {
+    const val = m[1].trim();
+    if (val) notes.push(val);
+  }
+  while ((m = xrayRe.exec(text)) !== null) {
+    const val = m[1].trim();
+    if (val) xrays.push(val);
+  }
+  return { notes, xrays };
 }
 
 /** user text ka fingerprint — lesson cache ke liye (token bachat) */

@@ -5,7 +5,9 @@ import {
   GGUF_CATALOGUE,
   LocalAi,
   LocalAiState,
+  detectPresetFromKey,
   fetchProviderModels,
+  getSuggestedModels,
   isAndroidApp,
 } from '../localAi';
 import { Action } from '../store';
@@ -16,6 +18,15 @@ interface Props {
   dispatch: (a: Action) => void;
   onClose: () => void;
 }
+
+const THREAD_OPTIONS = [1, 2, 4, 6, 8];
+const CONTEXT_OPTIONS = [
+  { value: 2048, label: '2048 (Fast · Low RAM)' },
+  { value: 4096, label: '4096 (Balanced)' },
+  { value: 8192, label: '8192 (Large Context)' },
+  { value: 16384, label: '16384 (Max RAM)' },
+];
+const TOKEN_OPTIONS = [256, 512, 1024, 2048, 4096];
 
 export function SettingsSheet({ settings, dispatch, onClose }: Props) {
   const [providers, setProviders] = useState<Provider[]>(settings.providers);
@@ -42,6 +53,14 @@ export function SettingsSheet({ settings, dispatch, onClose }: Props) {
   const [dlUrl, setDlUrl] = useState(GGUF_CATALOGUE[0].url);
 
   const current = providers.find((p) => p.id === activeId) ?? providers[0];
+
+  // Auto-save every setting change immediately so user never loses key/model
+  useEffect(() => {
+    dispatch({
+      t: 'settings',
+      patch: { providers, activeId, fallbackId, autoFallback, mode },
+    });
+  }, [providers, activeId, fallbackId, autoFallback, mode, dispatch]);
 
   useEffect(() => {
     if (!isAndroidApp()) return;
@@ -72,45 +91,69 @@ export function SettingsSheet({ settings, dispatch, onClose }: Props) {
       baseUrl: pr.baseUrl || current.baseUrl,
       model: pr.defaultModel || current.model,
     });
-    setScannedModels([]);
+    setScannedModels(pr.suggestedModels);
   };
 
-  const scanModels = async () => {
+  const onApiKeyChange = (rawKey: string) => {
+    const detected = detectPresetFromKey(rawKey);
+    if (detected) {
+      updateCurrent({
+        apiKey: rawKey,
+        baseUrl: detected.baseUrl,
+        model: current.model || detected.defaultModel,
+      });
+    } else {
+      updateCurrent({ apiKey: rawKey });
+    }
+  };
+
+  const scanModels = async (overrideProvider?: Provider) => {
+    const target = overrideProvider ?? current;
     setScanning(true);
     setTestStatus('Models scan ho rahe hain…');
     try {
-      const list = await fetchProviderModels(current.baseUrl, current.apiKey);
-      setScannedModels(list);
+      const list = await fetchProviderModels(target.baseUrl, target.apiKey, target.id);
       if (list.length) {
-        if (!current.model || !list.includes(current.model)) {
-          updateCurrent({ model: list[0] });
-        }
-        setTestStatus(`✓ ${list.length} models mile — neeche se chuno`);
+        setScannedModels(list);
+        const preferred =
+          list.find((m) => m === 'gemini-2.5-flash') ??
+          list.find((m) => m === target.model) ??
+          list[0];
+        updateCurrent({ model: preferred });
+        setTestStatus(`✓ ${list.length} models mile — dropdown se chuno`);
       } else {
-        setTestStatus('List khali mili — model naam manually likh sakte ho');
+        const fallback = getSuggestedModels(target.id, target.baseUrl, target.apiKey);
+        setScannedModels(fallback);
+        setTestStatus('Suggested models load kiye gaye');
       }
     } catch (e) {
-      setTestStatus(`Scan fail: ${e instanceof Error ? e.message : String(e)}`);
+      const fallback = getSuggestedModels(target.id, target.baseUrl, target.apiKey);
+      if (fallback.length) setScannedModels(fallback);
+      setTestStatus(`Scan error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setScanning(false);
     }
   };
 
-  const save = () => {
-    dispatch({
-      t: 'settings',
-      patch: { providers, activeId, fallbackId, autoFallback, mode },
-    });
-    onClose();
-  };
-
   const testNow = async () => {
-    setTestStatus('Checking…');
+    setTestStatus('Testing connection…');
     try {
       const code = await ping(current);
-      setTestStatus(`✓ Connected (${code}) — Ready!`);
+      setTestStatus(`✓ Connected (${code}) — AI Ready!`);
     } catch (e) {
       setTestStatus(`✗ ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const saveGgufOpts = (next: LocalAiState) => {
+    setGguf(next);
+    if (isAndroidApp()) {
+      LocalAi.saveOptions({
+        context: next.context,
+        threads: next.threads,
+        maxTokens: next.maxTokens,
+        temperature: next.temperature,
+      }).catch(() => {});
     }
   };
 
@@ -119,9 +162,11 @@ export function SettingsSheet({ settings, dispatch, onClose }: Props) {
     try {
       const st = await LocalAi.importModel();
       setGguf(st);
-      if (st.imported) {
-        setSelectedGguf(st.imported);
-        updateCurrent({ model: st.imported });
+      const picked = st.loaded || st.imported || st.models[0] || '';
+      if (picked) {
+        setSelectedGguf(picked);
+        updateCurrent({ model: picked });
+        setActiveId('gguf');
       }
     } catch (e) {
       setGguf((p) => ({ ...p, status: e instanceof Error ? e.message : 'Import cancelled' }));
@@ -135,9 +180,11 @@ export function SettingsSheet({ settings, dispatch, onClose }: Props) {
     try {
       const st = await LocalAi.downloadModel({ url: dlUrl });
       setGguf(st);
-      if (st.downloaded) {
-        setSelectedGguf(st.downloaded);
-        updateCurrent({ model: st.downloaded });
+      const picked = st.loaded || st.downloaded || st.models[0] || '';
+      if (picked) {
+        setSelectedGguf(picked);
+        updateCurrent({ model: picked });
+        setActiveId('gguf');
       }
     } catch (e) {
       setGguf((p) => ({ ...p, status: e instanceof Error ? e.message : 'Download failed' }));
@@ -159,6 +206,7 @@ export function SettingsSheet({ settings, dispatch, onClose }: Props) {
       const st = await LocalAi.loadModel({ name: selectedGguf });
       setGguf(st);
       updateCurrent({ model: selectedGguf });
+      setActiveId('gguf');
     } catch (e) {
       setGguf((p) => ({ ...p, status: e instanceof Error ? e.message : 'Load failed' }));
     } finally {
@@ -178,11 +226,20 @@ export function SettingsSheet({ settings, dispatch, onClose }: Props) {
     setSelectedGguf(st.models[0] ?? '');
   };
 
+  // Merge scanned models + built-in suggested models so dropdown is never empty
+  const modelOptions = Array.from(
+    new Set([
+      ...scannedModels,
+      ...getSuggestedModels(current.id, current.baseUrl, current.apiKey),
+      ...(current.model ? [current.model] : []),
+    ]),
+  );
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h3>AI Setup (API + Offline GGUF)</h3>
+          <h3>AI Setup (Online API + Offline GGUF)</h3>
           <button className="icon-btn" onClick={onClose}>
             ✕
           </button>
@@ -201,7 +258,7 @@ export function SettingsSheet({ settings, dispatch, onClose }: Props) {
           >
             {providers.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.label} {p.kind === 'gguf' ? '· Offline' : p.kind === 'local' ? '· Local HTTP' : '· API Key'}
+                {p.label} {p.kind === 'gguf' ? '· Offline' : p.kind === 'local' ? '· Local HTTP' : '· Online API'}
               </option>
             ))}
           </select>
@@ -211,13 +268,15 @@ export function SettingsSheet({ settings, dispatch, onClose }: Props) {
         {current.kind === 'gguf' ? (
           <div className="provider-box gguf-box">
             <div className="provider-box-title">
-              Offline GGUF Engine (llama.cpp In-App · No Internet / No API Key)
+              Offline GGUF Engine (In-App llama.cpp · No Internet / No API Key)
             </div>
-            <div className="gguf-status">Status: {gguf.status}</div>
+            <div className="gguf-status">
+              {gguf.loaded ? `✓ Loaded & Ready: ${gguf.loaded}` : `Status: ${gguf.status}`}
+            </div>
 
             <div className="gguf-row">
               <button className="btn primary sm" disabled={ggufBusy} onClick={doImportGguf}>
-                📂 Import .gguf File
+                📂 Import .gguf File (Auto-Load)
               </button>
               {ggufBusy && (
                 <button
@@ -246,7 +305,7 @@ export function SettingsSheet({ settings, dispatch, onClose }: Props) {
             </label>
 
             <label className="field">
-              <span>Available GGUF Models ({gguf.models.length})</span>
+              <span>Saved GGUF Models ({gguf.models.length})</span>
               <div className="inline-row">
                 <select
                   value={selectedGguf}
@@ -255,7 +314,7 @@ export function SettingsSheet({ settings, dispatch, onClose }: Props) {
                   {gguf.models.length === 0 && <option value="">— Koi .gguf model nahi —</option>}
                   {gguf.models.map((m) => (
                     <option key={m} value={m}>
-                      {m} {gguf.loaded === m ? '(LOADED)' : ''}
+                      {m} {gguf.loaded === m ? '✓ (LOADED)' : ''}
                     </option>
                   ))}
                 </select>
@@ -279,56 +338,66 @@ export function SettingsSheet({ settings, dispatch, onClose }: Props) {
               </div>
             </label>
 
+            {/* All 3 controls as clean Dropdowns (Threads, Context, Max Tokens) */}
             <div className="gguf-grid">
               <label className="field">
-                <span>Threads (1-8)</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={8}
+                <span>Threads</span>
+                <select
                   value={gguf.threads}
-                  onChange={(e) => setGguf({ ...gguf, threads: Number(e.target.value) || 4 })}
-                />
+                  onChange={(e) => saveGgufOpts({ ...gguf, threads: Number(e.target.value) })}
+                >
+                  {THREAD_OPTIONS.map((t) => (
+                    <option key={t} value={t}>
+                      {t} {t === 4 ? '(Recommended)' : ''}
+                    </option>
+                  ))}
+                </select>
               </label>
+
               <label className="field">
                 <span>Context</span>
                 <select
                   value={gguf.context}
-                  onChange={(e) => setGguf({ ...gguf, context: Number(e.target.value) })}
+                  onChange={(e) => saveGgufOpts({ ...gguf, context: Number(e.target.value) })}
                 >
-                  <option value={2048}>2048 (Fast / Low RAM)</option>
-                  <option value={4096}>4096 (Balanced)</option>
-                  <option value={8192}>8192 (Large RAM)</option>
+                  {CONTEXT_OPTIONS.map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.label}
+                    </option>
+                  ))}
                 </select>
               </label>
+
               <label className="field">
                 <span>Max Reply Tokens</span>
-                <input
-                  type="number"
-                  min={128}
-                  max={2048}
-                  step={64}
+                <select
                   value={gguf.maxTokens}
-                  onChange={(e) => setGguf({ ...gguf, maxTokens: Number(e.target.value) || 512 })}
-                />
+                  onChange={(e) => saveGgufOpts({ ...gguf, maxTokens: Number(e.target.value) })}
+                >
+                  {TOKEN_OPTIONS.map((tok) => (
+                    <option key={tok} value={tok}>
+                      {tok} tokens
+                    </option>
+                  ))}
+                </select>
               </label>
             </div>
           </div>
         ) : (
-          /* ======= API KEY / LOCAL SERVER PANEL ======= */
+          /* ======= ONLINE API KEY / LOCAL SERVER PANEL ======= */
           <div className="provider-box">
             <div className="provider-box-title">{current.label} Setup</div>
 
             {current.kind === 'cloud' && (
               <label className="field">
-                <span>Quick Preset (URL auto-fill — bas Key daalo)</span>
+                <span>Provider Preset (URL + Models auto-set)</span>
                 <select
-                  defaultValue=""
+                  value={CLOUD_PRESETS.find((p) => p.baseUrl === current.baseUrl)?.id ?? ''}
                   onChange={(e) => {
                     if (e.target.value) applyPreset(e.target.value);
                   }}
                 >
-                  <option value="">— Preset chuno (optional) —</option>
+                  <option value="">— Preset chuno —</option>
                   {CLOUD_PRESETS.map((pr) => (
                     <option key={pr.id} value={pr.id}>
                       {pr.label}
@@ -339,62 +408,59 @@ export function SettingsSheet({ settings, dispatch, onClose }: Props) {
             )}
 
             <label className="field">
-              <span>API Key {current.kind === 'local' ? '(Local pe khali chhod do)' : '(Required)'}</span>
+              <span>API Key {current.kind === 'local' ? '(Local pe khali chhod do)' : '(Paste key here)'}</span>
               <div className="inline-row">
                 <input
                   type="password"
                   value={current.apiKey}
-                  onChange={(e) => updateCurrent({ apiKey: e.target.value })}
-                  placeholder="AIza... / gsk_... / sk-..."
+                  onChange={(e) => onApiKeyChange(e.target.value)}
+                  placeholder="AIza... (Gemini) / gsk_... (Groq) / sk-..."
                 />
                 <button
-                  className="btn sm"
+                  className="btn primary sm"
                   disabled={scanning}
-                  onClick={scanModels}
-                  title="Key se available models fetch karo"
+                  onClick={() => scanModels()}
                 >
-                  {scanning ? '…' : 'Scan Models'}
+                  {scanning ? 'Scanning…' : '🔍 Detect Models'}
                 </button>
               </div>
             </label>
 
-            {scannedModels.length > 0 && (
-              <label className="field">
-                <span>Available Models ({scannedModels.length} found)</span>
-                <select
-                  value={current.model}
-                  onChange={(e) => updateCurrent({ model: e.target.value })}
-                >
-                  {scannedModels.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
+            <label className="field">
+              <span>Select Model ({modelOptions.length} available)</span>
+              <select
+                value={current.model}
+                onChange={(e) => updateCurrent({ model: e.target.value })}
+              >
+                {modelOptions.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </label>
 
             <label className="field">
-              <span>Model Name</span>
+              <span>Ya Custom Model ID likho</span>
               <input
                 value={current.model}
                 onChange={(e) => updateCurrent({ model: e.target.value })}
-                placeholder="gemini-2.0-flash / llama-3.3-70b-versatile / llama3.2"
+                placeholder="gemini-2.5-flash / llama-3.3-70b-versatile"
               />
             </label>
 
             <label className="field">
-              <span>Base URL (OpenAI-compatible)</span>
+              <span>Base URL</span>
               <input
                 value={current.baseUrl}
                 onChange={(e) => updateCurrent({ baseUrl: e.target.value })}
-                placeholder="https://generativelanguage.googleapis.com/v1beta/openai"
+                placeholder="https://generativelanguage.googleapis.com/v1beta"
               />
             </label>
 
             <div className="test-row">
-              <button className="btn sm" onClick={testNow}>
-                Test Connection
+              <button className="btn primary sm" onClick={testNow}>
+                ⚡ Test Connection
               </button>
               <span className="test-status">{testStatus}</span>
             </div>
@@ -433,11 +499,8 @@ export function SettingsSheet({ settings, dispatch, onClose }: Props) {
         </label>
 
         <div className="modal-foot">
-          <button className="btn" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="btn primary" onClick={save}>
-            Save
+          <button className="btn primary" onClick={onClose}>
+            ✓ Done (Auto-Saved)
           </button>
         </div>
       </div>

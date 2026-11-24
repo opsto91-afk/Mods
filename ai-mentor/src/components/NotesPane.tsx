@@ -6,8 +6,8 @@ interface Props {
 }
 
 const QUICK_CHIPS = [
-  'Pehle meaning/problem batao, definition sabse last me',
-  '2+2 se shuru karke 20+20 pe le jao',
+  'Pehle meaning aur real problem batao, definition sabse last me',
+  'Basic blocks se shuru karke step-by-step deep level pe le jao',
   'Har baar naya real-world example do',
   'Chhote 3-4 line ke steps me samjhao',
 ];
@@ -24,8 +24,10 @@ export function NotesPane({ notes, dispatch }: Props) {
       <div className="notes-card">
         <div className="notes-head">
           <div>
-            <div className="brain-title">Personal Memory Notes</div>
-            <div className="brain-sub">Jo yahan likhoge, AI har chat me yaad rakhega</div>
+            <div className="brain-title">Personal Memory Notes (AI Read + Write)</div>
+            <div className="brain-sub">
+              AI har chat me inhe padhta hai, aur baat karte waqt khud bhi naye points yahan save kar sakta hai
+            </div>
           </div>
           {notes.trim() && (
             <button className="btn sm" onClick={() => dispatch({ t: 'notes', value: '' })}>
@@ -46,7 +48,7 @@ export function NotesPane({ notes, dispatch }: Props) {
           className="notes-area"
           value={notes}
           onChange={(e) => dispatch({ t: 'notes', value: e.target.value })}
-          placeholder="Apni learning style, goals, ya weak points yahan likho…"
+          placeholder="Tumhari learning preferences, goals, ya AI ke auto-saved notes yahan dikhenge…"
         />
       </div>
     </div>

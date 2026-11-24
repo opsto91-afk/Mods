@@ -868,3 +868,146 @@ body,
   border-radius: 10px;
   font-size: 13px;
 }
+
+/* ===== 3D Bio-Lab Brain Stage ===== */
+.lab-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.chip-btn.active-chip {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.brain-3d-stage {
+  position: relative;
+  width: 100%;
+  height: 310px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #0b0e17;
+  margin-bottom: 10px;
+  touch-action: none;
+  user-select: none;
+}
+.brain-3d-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+}
+.brain-3d-canvas:active {
+  cursor: grabbing;
+}
+.brain-3d-overlay {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cam-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: rgba(19, 23, 34, 0.88);
+  color: var(--fg);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cam-btn:active {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+.explode-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 12.5px;
+  color: var(--fg);
+  margin-bottom: 10px;
+}
+.explode-bar input[type='range'] {
+  flex: 1;
+  max-width: 180px;
+  accent-color: var(--accent);
+}
+.parts-strip {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+}
+.part-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--fg);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.part-pill.sel {
+  background: rgba(255, 255, 255, 0.06);
+  font-weight: 600;
+}
+.part-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.bio-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0;
+  font-size: 13px;
+  color: var(--fg);
+  background: rgba(0, 0, 0, 0.22);
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+.bio-list-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ok);
+  margin-top: 6px;
+}
+.bio-list {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+  font-size: 13px;
+}
+.bio-list li {
+  margin-bottom: 3px;
+}
+.bio-warn {
+  font-size: 12.5px;
+  color: var(--warn);
+  background: rgba(255, 209, 102, 0.08);
+  border: 1px solid rgba(255, 209, 102, 0.28);
+  padding: 7px 10px;
+  border-radius: 8px;
+}
+

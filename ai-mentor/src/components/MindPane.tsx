@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AppState, MindProfile, MindScores, uid } from '../types';
+import { AppState, MindProfile, MindScores, Provider, uid } from '../types';
 import { Action } from '../store';
 import { XRAY_QUESTIONS, buildXrayAiPrompt } from '../prompt';
 import { streamChat } from '../ai';
@@ -11,6 +11,12 @@ interface Props {
 
 function clampScore(n: number): number {
   return Math.max(15, Math.min(98, Math.round(n)));
+}
+
+function pickBestProvider(state: AppState): Provider | undefined {
+  const active = state.settings.providers.find((p) => p.id === state.settings.activeId);
+  if (active && (active.kind !== 'cloud' || active.apiKey.trim())) return active;
+  return state.settings.providers.find((p) => p.kind === 'cloud' && p.apiKey.trim()) ?? active;
 }
 
 export function MindPane({ state, dispatch }: Props) {
@@ -64,7 +70,6 @@ export function MindPane({ state, dispatch }: Props) {
     setErr(null);
     const { scores, traits, summaryLines } = computeBaseFromQuiz(finalChoices);
 
-    // Recent user chat sample (across all topics)
     const userMsgs = state.topics
       .flatMap((t) => t.messages)
       .filter((m) => m.role === 'user')
@@ -83,10 +88,9 @@ export function MindPane({ state, dispatch }: Props) {
       'Repetitive examples se jaldi bore hona',
     ];
     let summary =
-      'Tera dimag pehle "problem aur meaning" dhoondta hai, phir pattern jodta hai. Ratta ya lamba lecture kaam nahi karta — chhote 3-4 line ke steps aur real examples se sabse tez seekhta hai.';
+      'Dimag pehle core problem aur meaning pakadta hai, phir pattern jodta hai. Chhote 3-4 line ke practical steps aur real examples se sabse tez seekhta hai.';
 
-    // Try enriching via active AI provider (works with API or Offline GGUF; if offline/unconfigured, instant local profile still saves!)
-    const provider = state.settings.providers.find((p) => p.id === state.settings.activeId);
+    const provider = pickBestProvider(state);
     if (provider && (provider.apiKey.trim() || provider.kind !== 'cloud')) {
       try {
         let raw = '';
@@ -133,26 +137,32 @@ export function MindPane({ state, dispatch }: Props) {
       .slice(-15)
       .map((m) => m.text.slice(0, 140));
 
-    if (userMsgs.length < 2) {
-      setErr('Pehle Chat me kam se kam 2-3 baatein karo, ya upar "Start X-Ray Test" chalao.');
+    if (userMsgs.length < 1 && !state.notes.trim()) {
+      setErr('Pehle Chat me 1-2 baatein karo ya "Start X-Ray Test" chalao.');
       return;
     }
     setBusy(true);
     setErr(null);
     const baseScores: MindScores = latest?.scores ?? {
-      logic: 74,
-      pattern: 78,
-      memory: 68,
-      focus: 70,
-      calm: 72,
-      social: 58,
+      logic: 76,
+      pattern: 80,
+      memory: 70,
+      focus: 72,
+      calm: 74,
+      social: 60,
     };
-    const provider = state.settings.providers.find((p) => p.id === state.settings.activeId);
+    const provider = pickBestProvider(state);
     try {
-      if (!provider) throw new Error('Provider select karo');
+      if (!provider) throw new Error('Settings (⚙) me AI provider select karo');
       let raw = '';
       for await (const d of streamChat(provider, [
-        { role: 'user', content: buildXrayAiPrompt('(Analyze directly from chat behavior)', userMsgs.join('\n')) },
+        {
+          role: 'user',
+          content: buildXrayAiPrompt(
+            `Current X-Ray: ${state.xray || '(empty)'}\nNotes: ${state.notes || '(empty)'}`,
+            userMsgs.join('\n'),
+          ),
+        },
       ])) {
         raw += d;
       }
@@ -221,7 +231,7 @@ export function MindPane({ state, dispatch }: Props) {
             >
               Cancel
             </button>
-            {busy && <span className="quiz-busy">Building Virtual Identity…</span>}
+            {busy && <span className="quiz-busy">AI Building Virtual Identity…</span>}
           </div>
         </div>
       </div>
@@ -233,9 +243,9 @@ export function MindPane({ state, dispatch }: Props) {
       {/* Top Action Bar */}
       <div className="mind-actions-card">
         <div>
-          <div className="brain-title">X-Ray & Virtual Identity</div>
+          <div className="brain-title">AI Mind X-Ray & Virtual Identity</div>
           <div className="brain-sub">
-            Brain regions + Big Five traits ke basis pe teri cognitive identity card
+            AI tumhari chats se live samajhta hai ki tumhara dimag kaise kaam karta hai, aur khud yahan note down karta hai
           </div>
         </div>
         <div className="mind-btn-row">
@@ -251,10 +261,34 @@ export function MindPane({ state, dispatch }: Props) {
             ⚡ Start X-Ray Test (6 Qs)
           </button>
           <button className="btn sm" disabled={busy} onClick={analyzeFromChats}>
-            {busy ? 'Analyzing…' : '🔍 Update from Chats'}
+            {busy ? 'AI Analyzing…' : '🤖 AI se Live X-Ray Update Karwao'}
           </button>
         </div>
         {err && <div className="err-banner">{err}</div>}
+      </div>
+
+      {/* Live AI-Controlled X-Ray Notebook (Read + Write by AI) */}
+      <div className="notes-card">
+        <div className="notes-head">
+          <div>
+            <div className="brain-title">🤖 Live AI X-Ray Memory (AI Read + Write)</div>
+            <div className="brain-sub">
+              Chat karte waqt AI jo tumhare mind/learning style ke baare me observe karta hai wo live yahan update hota hai
+            </div>
+          </div>
+          {state.xray.trim() && (
+            <button className="btn sm" onClick={() => dispatch({ t: 'xray', value: '' })}>
+              Clear
+            </button>
+          )}
+        </div>
+        <textarea
+          className="notes-area"
+          style={{ minHeight: 110 }}
+          value={state.xray}
+          onChange={(e) => dispatch({ t: 'xray', value: e.target.value })}
+          placeholder="AI abhi tumhare mind pattern ko observe kar raha hai — chat me baat karo ya upar X-Ray Test chalao…"
+        />
       </div>
 
       {/* Latest Virtual Identity Card */}
@@ -262,7 +296,9 @@ export function MindPane({ state, dispatch }: Props) {
         <div className="identity-card">
           <div className="id-header">
             <div>
-              <div className="id-badge">VIRTUAL IDENTITY · {latest.source === 'xray-test' ? 'X-RAY TEST' : 'CHAT ANALYSIS'}</div>
+              <div className="id-badge">
+                VIRTUAL IDENTITY · {latest.source === 'xray-test' ? 'X-RAY TEST' : 'AI LIVE OBSERVATION'}
+              </div>
               <div className="id-archetype">{latest.archetype}</div>
             </div>
             <div className="id-date">{new Date(latest.ts).toLocaleDateString()}</div>
@@ -299,7 +335,7 @@ export function MindPane({ state, dispatch }: Props) {
         </div>
       ) : (
         <div className="empty-card">
-          Abhi koi Virtual Identity card nahi bana. Upar <b>Start X-Ray Test</b> dabao — 6 sawalon me tera पूरा Brain & Personality profile ban jayega aur AI usi hisaab se padhayega.
+          Abhi Virtual Identity card nahi bana. Upar <b>⚡ Start X-Ray Test</b> ya <b>🤖 AI se Live X-Ray Update Karwao</b> dabao!
         </div>
       )}
 

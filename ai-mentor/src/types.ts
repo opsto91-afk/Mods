@@ -84,9 +84,9 @@ export const defaultProviders = (): Provider[] => [
   {
     id: 'gemini',
     label: 'Gemini (API Key)',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     apiKey: '',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     kind: 'cloud',
   },
   {

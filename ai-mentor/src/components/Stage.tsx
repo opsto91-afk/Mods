@@ -26,9 +26,13 @@ export function extractDiagram(text: string): DiagramSpec | null {
   return null;
 }
 
-/** chat bubble se raw ```diagram``` JSON hatao */
+/** chat bubble se raw ```diagram```, ```note```, ```xray``` blocks hatao */
 export function stripDiagram(text: string): string {
-  return text.replace(/```diagram[\s\S]*?```/g, '').trim();
+  return text
+    .replace(/```diagram[\s\S]*?```/gi, '')
+    .replace(/```note[\s\S]*?```/gi, '')
+    .replace(/```xray[\s\S]*?```/gi, '')
+    .trim();
 }
 
 const COLORS = ['#6ea8fe', '#7ee0a3', '#ffb454', '#c792ea', '#ff6b6b', '#82aaff', '#f78c6c'];

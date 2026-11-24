@@ -10,16 +10,21 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+
+import okhttp3.Call;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 /**
  * CPU-only GGUF runtime (llama.cpp JNI). ZaphRE ke LocalLlama ka port —
- * bina coroutines/okhttp ke, sirf JDK threads. Koi server ya API key nahi chahiye.
+ * OkHttp + single inference lock ke saath.
  */
 public final class LocalLlama {
 
@@ -38,11 +43,15 @@ public final class LocalLlama {
     public interface StatusCb { void onStatus(String s); }
     public interface TokenCb { void onUpdate(String fullSoFar); }
 
+    private static final Object INFER_LOCK = new Object();
+
     public static volatile String status = "No model loaded";
     public static volatile String loadedName = null;
     private static volatile boolean cancelTransfer = false;
+    private static volatile Call activeTransferCall = null;
     private static String loadedPath = null;
     private static boolean initialized = false;
+    private static Context appCtx;
 
     public static final class Options {
         public int context = 4096;
@@ -55,10 +64,25 @@ public final class LocalLlama {
     private static final String[] STOP_MARKERS = {"\nUser:", "\nAssistant:", "\n<tool_result"};
     private static final byte[] GGUF_MAGIC = {0x47, 0x47, 0x55, 0x46}; // "GGUF"
 
+    private static final OkHttpClient DL_CLIENT = new OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(180, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build();
+
     private LocalLlama() {}
 
+    public static void setAppContext(Context ctx) {
+        if (ctx != null) {
+            appCtx = ctx.getApplicationContext();
+            restoreOptions(appCtx);
+        }
+    }
+
     public static File folder(Context ctx) {
-        File f = new File(ctx.getFilesDir(), "local-models");
+        Context c = ctx != null ? ctx : appCtx;
+        File f = new File(c.getFilesDir(), "local-models");
         //noinspection ResultOfMethodCallIgnored
         f.mkdirs();
         return f;
@@ -69,7 +93,9 @@ public final class LocalLlama {
         File[] files = folder(ctx).listFiles();
         if (files != null) {
             for (File f : files) {
-                if (f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".gguf")) out.add(f.getName());
+                if (f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".gguf")) {
+                    out.add(f.getName());
+                }
             }
         }
         out.sort(String.CASE_INSENSITIVE_ORDER);
@@ -80,14 +106,14 @@ public final class LocalLlama {
         SharedPreferences p = ctx.getSharedPreferences("local_llama_options", Context.MODE_PRIVATE);
         options.context = clamp(p.getInt("context", 4096), 2048, 16384);
         options.threads = clamp(p.getInt("threads", 4), 1, 8);
-        options.maxTokens = clamp(p.getInt("tokens", 512), 128, 2048);
+        options.maxTokens = clamp(p.getInt("tokens", 512), 128, 4096);
         options.temperature = clampf(p.getFloat("temperature", 0.3f), 0f, 1.5f);
     }
 
     public static void saveOptions(Context ctx, int context, int threads, int maxTokens, float temperature) {
         options.context = clamp(context, 2048, 16384);
         options.threads = clamp(threads, 1, 8);
-        options.maxTokens = clamp(maxTokens, 128, 2048);
+        options.maxTokens = clamp(maxTokens, 128, 4096);
         options.temperature = clampf(temperature, 0f, 1.5f);
         ctx.getSharedPreferences("local_llama_options", Context.MODE_PRIVATE).edit()
                 .putInt("context", options.context)
@@ -95,22 +121,28 @@ public final class LocalLlama {
                 .putInt("tokens", options.maxTokens)
                 .putFloat("temperature", options.temperature)
                 .apply();
-        status = "Options saved — model reload karo to apply";
+        status = loadedName != null
+                ? "Ready: " + loadedName + " (options saved)"
+                : "Options saved";
     }
 
     private static int clamp(int v, int lo, int hi) { return Math.max(lo, Math.min(hi, v)); }
     private static float clampf(float v, float lo, float hi) { return Math.max(lo, Math.min(hi, v)); }
 
     public static void cancelInference() {
-        // abort flag atomic hai — kisi bhi thread se safe
-        try { instance.abortGeneration(); } catch (Throwable ignored) {}
+        try {
+            if (instance != null && initialized) instance.abortGeneration();
+        } catch (Throwable ignored) {}
     }
 
-    public static void cancelTransfer() { cancelTransfer = true; }
+    public static void cancelTransfer() {
+        cancelTransfer = true;
+        Call c = activeTransferCall;
+        if (c != null) c.cancel();
+    }
 
     private static volatile LocalLlama instance;
 
-    /** class init pe ek baar load karo (sirf supported ABI pe) */
     private static LocalLlama ensure() {
         LocalLlama i = instance;
         if (i != null) return i;
@@ -140,8 +172,9 @@ public final class LocalLlama {
         return base;
     }
 
-    /** Content URI se app storage me copy (document picker) */
+    /** Content URI se app storage me copy (document picker) + auto-load */
     public static String importModel(Context ctx, Uri uri, StatusCb cb) throws IOException {
+        setAppContext(ctx);
         cancelTransfer = false;
         String display = null;
         try (android.database.Cursor c = ctx.getContentResolver().query(uri,
@@ -162,7 +195,7 @@ public final class LocalLlama {
             status = "Importing model…";
             if (cb != null) cb.onStatus(status);
             InputStream in = ctx.getContentResolver().openInputStream(uri);
-            if (in == null) throw new IOException("File khali nahi khul sakti");
+            if (in == null) throw new IOException("Selected file open nahi ho saki");
             try (InputStream input = in; FileOutputStream out = new FileOutputStream(tmp)) {
                 byte[] buf = new byte[128 * 1024];
                 long count = 0, last = 0;
@@ -181,8 +214,16 @@ public final class LocalLlama {
             }
             checkGguf(tmp);
             if (!tmp.renameTo(file)) throw new IOException("Model save nahi hua");
-            status = "Imported " + file.getName();
+            status = "Imported " + file.getName() + " — Loading…";
             if (cb != null) cb.onStatus(status);
+            // Auto-load imported model so user can chat right away
+            try {
+                select(ctx, file.getName());
+                if (cb != null) cb.onStatus(status);
+            } catch (Exception loadEx) {
+                status = "Imported " + file.getName() + " (Load error: " + loadEx.getMessage() + ")";
+                if (cb != null) cb.onStatus(status);
+            }
             return file.getName();
         } finally {
             //noinspection ResultOfMethodCallIgnored
@@ -190,129 +231,146 @@ public final class LocalLlama {
         }
     }
 
-    /** HTTPS se seedha GGUF download (curated catalogue) */
-    public static String download(String urlStr, StatusCb cb) throws IOException {
+    /** HTTPS se seedha GGUF download (OkHttp — redirects + resume check) + auto-load */
+    public static String download(Context ctx, String urlStr, StatusCb cb) throws IOException {
+        setAppContext(ctx);
         if (!urlStr.startsWith("https://")) throw new IOException("Sirf https URL chalega");
         cancelTransfer = false;
-        String base = safeName(urlStr.substring(0, urlStr.indexOf('?') >= 0 ? urlStr.indexOf('?') : urlStr.length())
-                .substring(urlStr.lastIndexOf('/') + 1));
-        File root = folder(null, null);
+        String cleanUrl = urlStr.indexOf('?') >= 0 ? urlStr.substring(0, urlStr.indexOf('?')) : urlStr;
+        String base = safeName(cleanUrl.substring(cleanUrl.lastIndexOf('/') + 1));
+        File root = folder(ctx);
         File target = new File(root, base);
         if (target.exists()) {
-            status = "Model pehle se downloaded hai";
+            status = "Model pehle se downloaded hai — Loading…";
+            if (cb != null) cb.onStatus(status);
+            try { select(ctx, base); } catch (Exception ignored) {}
             if (cb != null) cb.onStatus(status);
             return base;
         }
         File part = new File(target.getPath() + ".part");
-        HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
-        conn.setConnectTimeout(30000);
-        conn.setReadTimeout(120000);
-        conn.setInstanceFollowRedirects(true);
-        conn.connect();
-        int code = conn.getResponseCode();
-        if (code / 100 != 3 && code != 200) throw new IOException("Download HTTP " + code);
-        long total = conn.getContentLength();
-        if (total > 0 && total > root.getUsableSpace()) {
-            throw new IOException("Storage kam hai (" + (total / 1048576) + " MB chahiye)");
-        }
-        try (InputStream in = conn.getInputStream(); FileOutputStream out = new FileOutputStream(part)) {
-            byte[] buf = new byte[128 * 1024];
-            long count = 0, last = 0;
-            int magicCount = 0;
-            byte[] magic = new byte[4];
-            while (true) {
-                if (cancelTransfer) throw new IOException("Download cancelled");
-                int n = in.read(buf);
-                if (n < 0) break;
-                if (magicCount < 4) {
-                    int copied = Math.min(4 - magicCount, n);
-                    System.arraycopy(buf, 0, magic, magicCount, copied);
-                    magicCount += copied;
-                    if (magicCount == 4 && !java.util.Arrays.equals(magic, GGUF_MAGIC)) {
-                        throw new IOException("URL GGUF file nahi hai (model page/login link nahi)");
+        Call call = DL_CLIENT.newCall(new Request.Builder()
+                .url(urlStr)
+                .header("User-Agent", "AIMentor-Android/1.0")
+                .build());
+        activeTransferCall = call;
+        try (Response response = call.execute()) {
+            if (!response.isSuccessful()) {
+                throw new IOException("Download HTTP " + response.code());
+            }
+            ResponseBody body = response.body();
+            if (body == null) throw new IOException("Empty download response");
+            long total = body.contentLength();
+            if (total > 0 && total > root.getUsableSpace()) {
+                throw new IOException("Storage kam hai (" + (total / 1048576) + " MB chahiye)");
+            }
+            try (InputStream in = body.byteStream(); FileOutputStream out = new FileOutputStream(part)) {
+                byte[] buf = new byte[128 * 1024];
+                long count = 0, last = 0;
+                int magicCount = 0;
+                byte[] magic = new byte[4];
+                while (true) {
+                    if (cancelTransfer) throw new IOException("Download cancelled");
+                    int n = in.read(buf);
+                    if (n < 0) break;
+                    if (magicCount < 4) {
+                        int copied = Math.min(4 - magicCount, n);
+                        System.arraycopy(buf, 0, magic, magicCount, copied);
+                        magicCount += copied;
+                        if (magicCount == 4 && !java.util.Arrays.equals(magic, GGUF_MAGIC)) {
+                            throw new IOException("Download GGUF file nahi hai (direct .gguf link use karo)");
+                        }
+                    }
+                    out.write(buf, 0, n);
+                    count += n;
+                    if (count - last >= 4 * 1024 * 1024) {
+                        status = "Downloading: " + (count / 1048576) + " MB" +
+                                (total > 0 ? " / " + (total / 1048576) + " MB" : "");
+                        if (cb != null) cb.onStatus(status);
+                        last = count;
                     }
                 }
-                out.write(buf, 0, n);
-                count += n;
-                if (count - last >= 4 * 1024 * 1024) {
-                    status = "Downloading: " + (count / 1048576) + " MB" +
-                            (total > 0 ? " / " + (total / 1048576) + " MB" : "");
-                    if (cb != null) cb.onStatus(status);
-                    last = count;
+                if (total > 0 && part.length() != total) {
+                    throw new IOException("Adhura download (" + (part.length() / 1048576) + "/" + (total / 1048576) + " MB)");
                 }
             }
+            checkGguf(part);
+            if (!part.renameTo(target)) throw new IOException("Model save nahi hua");
+            status = "Downloaded " + target.getName() + " — Loading…";
+            if (cb != null) cb.onStatus(status);
+            try {
+                select(ctx, target.getName());
+                if (cb != null) cb.onStatus(status);
+            } catch (Exception loadEx) {
+                status = "Downloaded " + target.getName() + " (Load error: " + loadEx.getMessage() + ")";
+                if (cb != null) cb.onStatus(status);
+            }
+            return target.getName();
         } finally {
-            conn.disconnect();
+            activeTransferCall = null;
+            //noinspection ResultOfMethodCallIgnored
+            part.delete();
         }
-        checkGguf(part);
-        if (!part.renameTo(target)) throw new IOException("Model save nahi hua");
-        status = "Downloaded " + target.getName();
-        if (cb != null) cb.onStatus(status);
-        return target.getName();
-    }
-
-    /** folder(null,null) overload bachane ke liye — sirf listModels wala folder */
-    private static File folder(Context a, Context b) {
-        return folder(appCtx);
-    }
-    private static Context appCtx;
-
-    public static void setAppContext(Context ctx) {
-        appCtx = ctx.getApplicationContext();
-        restoreOptions(appCtx);
     }
 
     /** GGUF load + context prepare */
-    public static synchronized void select(Context ctx, String name) throws IOException {
-        if (appCtx == null) setAppContext(ctx);
-        File root = folder(ctx);
-        File file = new File(root, name);
-        if (!root.equals(file.getParentFile()) || !file.isFile()) throw new IOException("Model nahi mila: " + name);
-        checkGguf(file);
-        LocalLlama i = ensure();
-        if (!initialized) {
-            i.init(ctx.getApplicationInfo().nativeLibraryDir);
-            initialized = true;
+    public static void select(Context ctx, String name) throws IOException {
+        synchronized (INFER_LOCK) {
+            setAppContext(ctx);
+            File root = folder(ctx);
+            File file = new File(root, name);
+            if (!root.equals(file.getParentFile()) || !file.isFile()) {
+                throw new IOException("Model nahi mila: " + name);
+            }
+            checkGguf(file);
+            LocalLlama i = ensure();
+            if (!initialized) {
+                i.init(appCtx.getApplicationInfo().nativeLibraryDir);
+                initialized = true;
+            }
+            if (loadedPath != null) {
+                i.unload();
+                loadedPath = null;
+                loadedName = null;
+            }
+            status = "Loading " + name + "…";
+            if (i.load(file.getAbsolutePath()) != 0) {
+                String why = safeErr(i.lastError());
+                status = "Load failed";
+                throw new IOException("Load nahi hua: " + name + (why.isEmpty() ? "" : " — " + why));
+            }
+            if (i.prepare(options.context, options.threads, options.temperature) != 0) {
+                String why = safeErr(i.lastError());
+                i.unload();
+                status = "Context failed";
+                throw new IOException("Context nahi bana" + (why.isEmpty() ? "" : " — " + why) +
+                        " (Context 2048 try karo)");
+            }
+            loadedPath = file.getAbsolutePath();
+            loadedName = name;
+            status = "Ready: " + name + " (CPU)";
         }
-        if (loadedPath != null) {
-            i.unload();
-            loadedPath = null;
-            loadedName = null;
-        }
-        status = "Loading " + name + "…";
-        if (i.load(file.getAbsolutePath()) != 0) {
-            String why = safeErr(i.lastError());
-            status = "Load failed";
-            throw new IOException("Load nahi hua: " + name + (why.isEmpty() ? "" : " — " + why));
-        }
-        if (i.prepare(options.context, options.threads, options.temperature) != 0) {
-            String why = safeErr(i.lastError());
-            i.unload();
-            status = "Context failed";
-            throw new IOException("Context nahi bana" + (why.isEmpty() ? "" : " — " + why) +
-                    " (chhota model/context try karo)");
-        }
-        loadedPath = file.getAbsolutePath();
-        loadedName = name;
-        status = "Ready: " + name + " (CPU)";
     }
 
-    public static synchronized void unloadModel() {
-        if (loadedPath != null) {
-            try { ensure().unload(); } catch (Throwable ignored) {}
-            loadedPath = null;
-            loadedName = null;
+    public static void unloadModel() {
+        synchronized (INFER_LOCK) {
+            if (loadedPath != null) {
+                try { ensure().unload(); } catch (Throwable ignored) {}
+                loadedPath = null;
+                loadedName = null;
+            }
+            status = "Model unloaded";
         }
-        status = "Model unloaded";
     }
 
-    public static synchronized void deleteModel(Context ctx, String name) throws IOException {
-        File root = folder(ctx);
-        File file = new File(root, name);
-        if (!root.equals(file.getParentFile()) || !file.isFile()) throw new IOException("Model nahi mila");
-        if (file.getAbsolutePath().equals(loadedPath)) unloadModel();
-        if (!file.delete()) throw new IOException("Delete nahi hua");
-        status = "Deleted " + name;
+    public static void deleteModel(Context ctx, String name) throws IOException {
+        synchronized (INFER_LOCK) {
+            File root = folder(ctx);
+            File file = new File(root, name);
+            if (!root.equals(file.getParentFile()) || !file.isFile()) throw new IOException("Model nahi mila");
+            if (file.getAbsolutePath().equals(loadedPath)) unloadModel();
+            if (!file.delete()) throw new IOException("Delete nahi hua");
+            status = "Deleted " + name;
+        }
     }
 
     private static String safeErr(String e) {
@@ -322,37 +380,68 @@ public final class LocalLlama {
         return t;
     }
 
-    /** system + user prompt → streaming tokens (TokenCb ko full-so-far milta hai) */
+    /** system + user prompt → streaming tokens */
     public static String generate(String system, String user, TokenCb cb) throws IOException {
-        LocalLlama i;
-        synchronized (LocalLlama.class) {
-            if (loadedPath == null) throw new IOException("Pehle Settings → Local GGUF me model Load karo");
-            i = ensure();
-        }
-        i.clearAbort();
-        int r1 = i.processSystemPrompt(system);
-        if (r1 == 1) throw new IOException("System prompt context se bada — context badhao ya notes chhota karo");
-        if (r1 != 0) throw new IOException("System prompt fail — model reload karo");
-        int r2 = i.processUserPrompt(user, options.maxTokens);
-        if (r2 == 1) throw new IOException("History context me fit nahi — nayi chat shuru karo ya context badhao");
-        if (r2 != 0) throw new IOException("Prompt fail — model reload karo");
-        StringBuilder result = new StringBuilder();
-        while (true) {
-            String next = i.generateNextToken();
-            if (next == null) break;
-            result.append(next);
-            int cut = -1;
-            for (String m : STOP_MARKERS) {
-                int idx = result.indexOf(m);
-                if (idx >= 0 && (cut < 0 || idx < cut)) cut = idx;
+        synchronized (INFER_LOCK) {
+            if (loadedPath == null) {
+                // Auto-load first available .gguf model if user didn't tap Load
+                List<String> available = listModels(appCtx);
+                if (!available.isEmpty()) {
+                    select(appCtx, available.get(0));
+                } else {
+                    throw new IOException("Koi GGUF model nahi mila — Settings (⚙) me .gguf file Import ya Download karo.");
+                }
             }
-            if (cut >= 0) {
-                result.setLength(cut);
+            LocalLlama i = ensure();
+            i.clearAbort();
+
+            String sys = system != null ? system : "";
+            // Keep system prompt compact for small local GGUF context windows
+            if (sys.length() > 1800) {
+                sys = sys.substring(0, 1800);
+            }
+            int r1 = i.processSystemPrompt(sys);
+            if (r1 == 1) {
+                // Retry with ultra-short system prompt if context is tight
+                r1 = i.processSystemPrompt("Tum ek helpful Hinglish AI mentor ho. Seedha aur saaf jawab do.");
+            }
+            if (r1 != 0) {
+                throw new IOException("Local model system prompt fail — Settings me model reload karo");
+            }
+
+            String usr = user != null ? user.trim() : "";
+            if (!usr.endsWith("Assistant:")) {
+                usr = usr + "\nAssistant:";
+            }
+            int predict = Math.min(options.maxTokens, Math.max(128, options.context / 3));
+            int r2 = i.processUserPrompt(usr, predict);
+            if (r2 == 1 && usr.length() > 800) {
+                // Trim older history so latest question fits
+                usr = usr.substring(usr.length() - 800);
+                r2 = i.processUserPrompt(usr, 256);
+            }
+            if (r2 != 0) {
+                throw new IOException("Chat history context se badi hai — '+ New Chat' kholo ya Context badhao");
+            }
+
+            StringBuilder result = new StringBuilder();
+            while (true) {
+                String next = i.generateNextToken();
+                if (next == null) break;
+                result.append(next);
+                int cut = -1;
+                for (String m : STOP_MARKERS) {
+                    int idx = result.indexOf(m);
+                    if (idx >= 0 && (cut < 0 || idx < cut)) cut = idx;
+                }
+                if (cut >= 0) {
+                    result.setLength(cut);
+                    if (cb != null) cb.onUpdate(result.toString());
+                    break;
+                }
                 if (cb != null) cb.onUpdate(result.toString());
-                break;
             }
-            if (cb != null) cb.onUpdate(result.toString());
+            return result.toString().trim();
         }
-        return result.toString();
     }
 }
