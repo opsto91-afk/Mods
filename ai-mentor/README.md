@@ -45,11 +45,21 @@ Auto-fallback ON ho to cloud limit (429) aate hi app local provider pe switch ka
 - `docs/IMPROVED_IDEA.md` — idea v2 (kya kyun hai)
 - `docs/DEV_BRIEF.md` — dev AI ko copy-paste karne wala spec
 
+## APK kaise milega
+
+**Automatic (recommended):** `ai-mentor/**` push karo → GitHub Actions **Build APK** workflow chalti hai → APK dono jagah:
+1. **Actions artifact** — https://github.com/opsto91-afk/Mods/actions (latest run → Artifacts)
+2. **`apk-output` branch** — `git fetch origin apk-output && git show FETCH_HEAD:apk/app-debug.apk > app.apk`
+
+**Phone pe install:** APK download → tap → "Install unknown apps" allow → install.
+
+Debug APK hai (debug-key se signed) — personal use ke liye theek. Release signing baad me.
+
 ## Build order
 
 1. ✅ Layout + providers (cloud/local) + chat + fixed teaching prompt
 2. ✅ Map + topic-wise branch chats
-3. ⬜ Diagram templates (line/pie/flow/arrows) + stage controls
-4. ⬜ Atak-gaya buttons + Notes auto-entries + lesson cache + token meter
-5. ⬜ X-ray report import + profile update
-6. ⬜ Capacitor wrap → APK
+3. ✅ Diagram templates (line/pie/flow/arrows) + stage controls
+4. ✅ Atak-gaya buttons + Notes auto-entries + lesson cache + token meter
+5. ✅ X-ray report import + profile hint
+6. ✅ Capacitor wrap → **APK via GitHub Actions**
