@@ -91,3 +91,92 @@ export function buildSystemPrompt(ctx: PromptCtx): string {
 export function fingerprint(topicId: string, text: string): string {
   return topicId + '|' + text.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200);
 }
+
+/**
+ * X-Ray Mind Knowledge: AI ko human brain + cognitive science ki knowledge deke
+ * user ka interactive test ya chat-based analysis karwana -> Virtual Identity profile.
+ */
+export const XRAY_QUESTIONS: {
+  id: string;
+  part: string;
+  q: string;
+  options: { label: string; delta: Partial<Record<'logic' | 'pattern' | 'memory' | 'focus' | 'calm' | 'social', number>>; trait?: string }[];
+}[] = [
+  {
+    id: 'q1',
+    part: 'Prefrontal Cortex · Reasoning',
+    q: 'Jab koi naya, mushkil topic samne aata hai to tera dimag sabse pehle kya dhoondta hai?',
+    options: [
+      { label: 'Pehle "kyun bana / kya problem solve karta hai" (meaning)', delta: { logic: 22, pattern: 15 }, trait: 'Meaning-first thinker' },
+      { label: 'Kisi purani cheez se compare / pattern match karta hoon', delta: { pattern: 24, memory: 12 }, trait: 'Fast pattern matcher' },
+      { label: 'Step-by-step chhota example chala ke dekhta hoon', delta: { logic: 18, focus: 16 }, trait: 'Hands-on builder' },
+      { label: 'Sidha final rule ya shortcut chahiye', delta: { focus: 12, logic: 10 }, trait: 'Direct execution' },
+    ],
+  },
+  {
+    id: 'q2',
+    part: 'Parietal Lobe · Pattern Recognition',
+    q: 'Agar 3 alag-alag cheezon me ek chhupa hua connection ho, to:',
+    options: [
+      { label: 'Turant dikh jaata hai ("ye to wahi cheez hai!")', delta: { pattern: 25, logic: 15 }, trait: 'High pattern radar' },
+      { label: 'Diagram ya visual dekh ke samajh aata hai', delta: { pattern: 18, memory: 14 }, trait: 'Visual-spatial learner' },
+      { label: 'Jab koi link bata de tab click hota hai', delta: { logic: 12, memory: 12 } },
+    ],
+  },
+  {
+    id: 'q3',
+    part: 'Hippocampus · Memory Encoding',
+    q: 'Koi baat tujhe lambi der tak kab yaad rehti hai?',
+    options: [
+      { label: 'Jab uska logic / kahaani jud jaaye (ratta bilkul nahi)', delta: { memory: 22, logic: 16 }, trait: 'Deep semantic memory' },
+      { label: 'Jab khud haath se use / build kar loon', delta: { memory: 20, focus: 16 }, trait: 'Procedural memory' },
+      { label: 'Chhote notes ya visual map dekh ke', delta: { memory: 16, pattern: 14 } },
+    ],
+  },
+  {
+    id: 'q4',
+    part: 'Anterior Cingulate · Focus & Attention',
+    q: 'Lamba lecture ya 20-line ka text dekh ke kya hota hai?',
+    options: [
+      { label: 'Bore / skip — chhote 3-4 line ke chunks chahiye', delta: { focus: 14, pattern: 16 }, trait: 'Micro-chunk processor' },
+      { label: 'Agar kaam ka ho to poora focus se padh leta hoon', delta: { focus: 24, calm: 14 }, trait: 'Deep focus lock' },
+      { label: 'Beech-beech me sawal poochh ke engage rehna padta hai', delta: { focus: 18, social: 14 }, trait: 'Interactive thinker' },
+    ],
+  },
+  {
+    id: 'q5',
+    part: 'Amygdala · Stress & Emotion Response',
+    q: 'Jab koi cheez baar-baar try karne pe bhi atak jaaye / galat ho:',
+    options: [
+      { label: 'Shant rehke angle badalta hoon — gussa kam aata hai', delta: { calm: 26, logic: 14 }, trait: 'Calm under pressure' },
+      { label: 'Thoda irritate hota hoon, par tod ke hi chhodta hoon', delta: { focus: 20, calm: 14 }, trait: 'Relentless finisher' },
+      { label: 'Break leta hoon, baad me fresh dimag se dekhta hoon', delta: { calm: 20, pattern: 12 }, trait: 'Reset strategist' },
+    ],
+  },
+  {
+    id: 'q6',
+    part: 'Social Brain · Big Five Extraversion / Agreeableness',
+    q: 'Logon ke saath tera natural style kaisa hai?',
+    options: [
+      { label: 'Apne kaam / ideas me rehta hoon (Introvert / selective)', delta: { social: 10, focus: 18, calm: 16 }, trait: 'Introvert · self-driven' },
+      { label: 'Situation ke hisaab se — zarurat pe khul ke baat (Ambivert)', delta: { social: 20, calm: 18, pattern: 12 }, trait: 'Adaptive communicator' },
+      { label: 'Logon ko samajhna, lead karna ya persuade karna aata hai', delta: { social: 28, pattern: 16 }, trait: 'Strategic persuader' },
+    ],
+  },
+];
+
+export function buildXrayAiPrompt(answersSummary: string, recentChatSample: string): string {
+  return [
+    'Tum ek neuroscience + cognitive psychology analyst ho (Prefrontal logic, Parietal pattern matching, Hippocampus memory, Amygdala calm, Big Five traits).',
+    'Neeche user ke X-Ray test answers aur uski recent chat style di hai.',
+    'Sirf VALID JSON return karo (koi markdown ya extra text nahi):',
+    '{"archetype":"2-4 word title","strengths":["...","...","..."],"blindspots":["...","..."],"summary":"Hinglish me 3-4 line ki seedhi virtual identity report — iska dimag kaise kaam karta hai aur isse kaise padhana chahiye."}',
+    '',
+    'TEST ANSWERS:',
+    answersSummary,
+    '',
+    'RECENT CHAT SAMPLE:',
+    recentChatSample || '(none)',
+  ].join('\n');
+}
+

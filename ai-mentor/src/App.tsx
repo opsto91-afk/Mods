@@ -1,118 +1,239 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
+import { ChatDrawer } from './components/ChatDrawer';
+import { ChatPane } from './components/ChatPane';
+import { MapPane } from './components/MapPane';
+import { MindPane } from './components/MindPane';
+import { NotesPane } from './components/NotesPane';
+import { SettingsSheet } from './components/SettingsSheet';
+import { extractDiagram, Stage } from './components/Stage';
+import { runTurn, SendOpts } from './runner';
 import { useAppState } from './store';
-import { activeTopic } from './selectors';
-import Stage from './components/Stage';
-import ChatPane from './components/ChatPane';
-import MapPane from './components/MapPane';
-import NotesPane from './components/NotesPane';
-import SettingsSheet from './components/SettingsSheet';
-import type { Pane } from './types';
+import { Msg, Pane, uid } from './types';
 
-const STAGE_KEY = 'ai-mentor-stage-h';
-
-export default function App() {
+export function App() {
   const [state, dispatch] = useAppState();
+  const [busy, setBusy] = useState(false);
+  const [streamText, setStreamText] = useState('');
+  const [error, setError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [stageH, setStageH] = useState(() => {
-    const v = Number(localStorage.getItem(STAGE_KEY));
-    return Number.isFinite(v) && v > 60 ? v : 200;
-  });
-  const dragging = useRef(false);
-  const phoneRef = useRef<HTMLDivElement>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [stageDismissed, setStageDismissed] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const topic = activeTopic(state);
+  const activeTopic =
+    state.topics.find((t) => t.id === state.activeTopicId) ?? state.topics[0];
 
-  const setStage = useCallback((h: number) => {
-    const max = Math.max(120, (phoneRef.current?.clientHeight ?? 700) - 260);
-    const clamped = Math.min(Math.max(h, 80), max);
-    setStageH(clamped);
-    localStorage.setItem(STAGE_KEY, String(clamped));
-  }, []);
+  const activeProvider = state.settings.providers.find(
+    (p) => p.id === state.settings.activeId,
+  );
 
-  useEffect(() => {
-    function onMove(e: PointerEvent) {
-      if (!dragging.current || !phoneRef.current) return;
-      const rect = phoneRef.current.getBoundingClientRect();
-      setStage(e.clientY - rect.top - 54); // header + divider approx
+  // Latest diagram from current chat (STAGE renders ONLY when a diagram actually exists!)
+  const latestDiagram = useMemo(() => {
+    if (busy && streamText) {
+      const live = extractDiagram(streamText);
+      if (live) return live;
     }
-    function onUp() {
-      dragging.current = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
+    for (let i = activeTopic.messages.length - 1; i >= 0; i--) {
+      const m = activeTopic.messages[i];
+      if (m.role === 'assistant') {
+        const d = extractDiagram(m.text);
+        if (d) return d;
+      }
     }
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    return () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-    };
-  }, [setStage]);
+    return null;
+  }, [activeTopic.messages, busy, streamText]);
 
-  const approxTokens = Math.round(state.usage.chars / 4);
-  const hot = approxTokens > 50000;
+  const send = async (rawText: string, opts: SendOpts) => {
+    let text = rawText.trim();
+    if (!text) {
+      const lastUser = [...activeTopic.messages].reverse().find((m) => m.role === 'user');
+      if (!lastUser) return;
+      text = lastUser.text;
+    }
 
-  const panes: [Pane, string, string][] = [
-    ['map', '🗺 Map', 'branches'],
-    ['chat', '💬 Chat', 'teaching'],
-    ['notes', '📝 Notes', 'profile'],
-  ];
+    setError(null);
+    setBusy(true);
+    setStreamText('');
+    setStageDismissed(false);
+
+    if (!opts.replaceLast) {
+      const tempUser: Msg = { id: uid(), role: 'user', text, ts: Date.now() };
+      dispatch({ t: 'pushMsg', topicId: activeTopic.id, msg: tempUser });
+    }
+
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    try {
+      const res = await runTurn(
+        state,
+        activeTopic,
+        text,
+        opts,
+        (partial) => setStreamText(partial),
+        ctrl.signal,
+      );
+
+      if (opts.replaceLast) {
+        const trimmed = activeTopic.messages.slice(0, -1);
+        dispatch({
+          t: 'setTopicMsgs',
+          topicId: activeTopic.id,
+          msgs: [...trimmed, res.assistantMsg],
+        });
+      } else {
+        dispatch({ t: 'pushMsg', topicId: activeTopic.id, msg: res.assistantMsg });
+      }
+
+      if (!res.fromCache) {
+        dispatch({
+          t: 'usage',
+          chars: text.length + res.assistantMsg.text.length,
+          requests: 1,
+        });
+      }
+    } catch (e) {
+      if ((e as Error)?.name !== 'AbortError') {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      setBusy(false);
+      setStreamText('');
+      abortRef.current = null;
+    }
+  };
+
+  const stop = () => abortRef.current?.abort();
+
+  const branchFrom = (msg: Msg) => {
+    const title = msg.text.replace(/```[\s\S]*?```/g, '').trim().slice(0, 28) || 'Branch';
+    const handoff = `Parent "${activeTopic.title}" se branch: "${msg.text.slice(0, 180)}"`;
+    dispatch({ t: 'addTopic', title, parentId: activeTopic.id, handoff });
+  };
+
+  const newQuickChat = () => {
+    dispatch({ t: 'addTopic', title: 'New chat', parentId: null, handoff: null });
+  };
+
+  const showStage = state.pane === 'chat' && latestDiagram !== null && !stageDismissed;
+  const latestProfile = state.profiles?.[0] ?? null;
 
   return (
-    <div className="phone" ref={phoneRef}>
-      <header className="header">
-        <span className="title">🧠 AI Mentor</span>
-        <span className="crumb">
-          {state.pane === 'chat' ? `topic: ${topic.title}` : state.pane === 'map' ? 'topic tree' : 'notes → AI'}
-        </span>
-        <span className={`usage ${hot ? 'hot' : ''}`} title="approx tokens this session">
-          ~{approxTokens.toLocaleString()} tok
-        </span>
-        <button style={{ padding: '6px 10px' }} onClick={() => setShowSettings(true)} title="Settings">
-          ⚙
+    <div className={`app-shell ${showStage ? 'has-stage' : ''}`}>
+      {/* Clean GPT-style top bar: ☰ Chats | Topic title + active AI badge | + New | ⚙ */}
+      <header className="topbar">
+        <button
+          className="top-icon"
+          onClick={() => setDrawerOpen(true)}
+          title="All Chats"
+        >
+          ☰
         </button>
+
+        <div className="top-center" onClick={() => setDrawerOpen(true)}>
+          <span className="top-title">{activeTopic.title}</span>
+          <span className="top-sub">
+            {activeProvider?.kind === 'gguf'
+              ? 'Offline GGUF'
+              : activeProvider?.model || activeProvider?.label || 'AI'}
+          </span>
+        </div>
+
+        <div className="top-right">
+          <button className="top-icon" onClick={newQuickChat} title="New Chat">
+            ＋
+          </button>
+          <button
+            className="top-icon"
+            onClick={() => setShowSettings(true)}
+            title="AI Settings"
+          >
+            ⚙
+          </button>
+        </div>
       </header>
 
-      <Stage topic={topic} height={stageH} />
+      {/* Main Content Area — portrait: stacked; landscape: chat left + stage right */}
+      <main className="workspace">
+        {showStage && (
+          <aside className="stage-dock">
+            <Stage spec={latestDiagram} />
+            <button
+              className="stage-close"
+              onClick={() => setStageDismissed(true)}
+              title="Hide visual"
+            >
+              ✕
+            </button>
+          </aside>
+        )}
 
-      <div
-        className="divider"
-        title="Khinch ke stage bada-chhota karo"
-        onPointerDown={(e) => {
-          e.preventDefault();
-          dragging.current = true;
-          document.body.style.cursor = 'row-resize';
-          document.body.style.userSelect = 'none';
-        }}
+        <section className="main-pane">
+          {state.pane === 'chat' && (
+            <ChatPane
+              topic={activeTopic}
+              busy={busy}
+              streamText={streamText}
+              error={error}
+              onSend={send}
+              onStop={stop}
+              onBranchFrom={branchFrom}
+            />
+          )}
+          {state.pane === 'map' && (
+            <MapPane
+              latestProfile={latestProfile}
+              onGoMind={() => dispatch({ t: 'pane', pane: 'mind' })}
+            />
+          )}
+          {state.pane === 'mind' && (
+            <MindPane state={state} dispatch={dispatch} />
+          )}
+          {state.pane === 'notes' && (
+            <NotesPane notes={state.notes} dispatch={dispatch} />
+          )}
+        </section>
+      </main>
+
+      {/* Clean Bottom Navigation: Chat · Brain Map · Mind (X-Ray) · Notes */}
+      <nav className="bottom-nav">
+        {(
+          [
+            ['chat', '💬', 'Chat'],
+            ['map', '🧠', 'Brain Map'],
+            ['mind', '⚡', 'Mind X-Ray'],
+            ['notes', '📝', 'Notes'],
+          ] as [Pane, string, string][]
+        ).map(([p, icon, label]) => (
+          <button
+            key={p}
+            className={`nav-tab ${state.pane === p ? 'active' : ''}`}
+            onClick={() => dispatch({ t: 'pane', pane: p })}
+          >
+            <span className="nav-ic">{icon}</span>
+            <span>{label}</span>
+          </button>
+        ))}
+      </nav>
+
+      <ChatDrawer
+        open={drawerOpen}
+        topics={state.topics}
+        activeId={activeTopic.id}
+        dispatch={dispatch}
+        onClose={() => setDrawerOpen(false)}
       />
 
-      <div className="content">
-        {state.pane === 'chat' && (
-          <ChatPane
-            state={state}
-            topic={topic}
-            dispatch={dispatch}
-            onOpenSettings={() => setShowSettings(true)}
-          />
-        )}
-        {state.pane === 'map' && <MapPane state={state} dispatch={dispatch} />}
-        {state.pane === 'notes' && <NotesPane state={state} dispatch={dispatch} />}
-
-        <nav className="tabs">
-          {panes.map(([id, label]) => (
-            <button
-              key={id}
-              className={state.pane === id ? 'on' : ''}
-              onClick={() => dispatch({ t: 'pane', pane: id })}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-      </div>
-
       {showSettings && (
-        <SettingsSheet state={state} dispatch={dispatch} onClose={() => setShowSettings(false)} />
+        <SettingsSheet
+          settings={state.settings}
+          dispatch={dispatch}
+          onClose={() => setShowSettings(false)}
+        />
       )}
     </div>
   );
 }
+
+export default App;
+

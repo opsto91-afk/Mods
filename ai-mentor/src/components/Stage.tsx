@@ -26,6 +26,11 @@ export function extractDiagram(text: string): DiagramSpec | null {
   return null;
 }
 
+/** chat bubble se raw ```diagram``` JSON hatao */
+export function stripDiagram(text: string): string {
+  return text.replace(/```diagram[\s\S]*?```/g, '').trim();
+}
+
 const COLORS = ['#6ea8fe', '#7ee0a3', '#ffb454', '#c792ea', '#ff6b6b', '#82aaff', '#f78c6c'];
 
 function Pie({ spec }: { spec: DiagramSpec }) {
@@ -190,17 +195,27 @@ function Arrows({ spec, t }: { spec: DiagramSpec; t: number }) {
   );
 }
 
-/** Stage: upar wala visual area — diagram render + play/pause/slider */
-export default function Stage({ topic, height }: { topic: Topic; height: number }) {
+/** Stage: visual area — sirf tab dikhta hai jab diagram ho */
+export function Stage({
+  spec,
+  topic,
+  height,
+}: {
+  spec?: DiagramSpec | null;
+  topic?: Topic;
+  height?: number;
+}) {
   const lastDiag = useMemo(() => {
+    if (spec !== undefined) return spec;
+    if (!topic) return null;
     for (let i = topic.messages.length - 1; i >= 0; i--) {
       const m = topic.messages[i];
       if (m.role !== 'assistant') continue;
-      const spec = extractDiagram(m.text);
-      if (spec) return spec;
+      const d = extractDiagram(m.text);
+      if (d) return d;
     }
     return null;
-  }, [topic.messages]);
+  }, [spec, topic]);
 
   const animated = lastDiag && (lastDiag.template === 'line' || lastDiag.template === 'flow' || lastDiag.template === 'arrows');
   const [playing, setPlaying] = useState(false);
@@ -214,7 +229,7 @@ export default function Stage({ topic, height }: { topic: Topic; height: number 
 
   useEffect(() => {
     if (!playing) return;
-    let start = performance.now() - t * 4000;
+    const start = performance.now() - t * 4000;
     const tick = (now: number) => {
       const v = (now - start) / 4000;
       if (v >= 1) {
@@ -229,20 +244,12 @@ export default function Stage({ topic, height }: { topic: Topic; height: number 
     return () => cancelAnimationFrame(raf.current);
   }, [playing]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  if (!lastDiag) return null;
+
   return (
-    <div className="stage" style={{ height }}>
-      <span className="stage-badge">Stage</span>
-      <div className="stage-inner">
-        {!lastDiag ? (
-          <div className="stage-hint">
-            <div style={{ fontSize: 22 }}>📐</div>
-            <div>
-              Diagram yahan dikhega.
-              <br />
-              AI se bolo <b>"dikhao"</b> — topic ko visual chahiye ho tabhi.
-            </div>
-          </div>
-        ) : lastDiag.template === 'pie' ? (
+    <div className="stage" style={height ? { height } : undefined}>
+      <div className="stage-inner" style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {lastDiag.template === 'pie' ? (
           <Pie spec={lastDiag} />
         ) : lastDiag.template === 'line' ? (
           <LineChart spec={lastDiag} t={t} />

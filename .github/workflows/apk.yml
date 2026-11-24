@@ -18,7 +18,7 @@ permissions:
 jobs:
   apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     defaults:
       run:
@@ -61,7 +61,7 @@ jobs:
           fi
           echo "Using sdkmanager: $SDKMANAGER"
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-          "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0" 2>&1 | tail -5
+          "$SDKMANAGER" --install "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "cmake;3.22.1" 2>&1 | tail -8
 
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace

@@ -1,48 +1,53 @@
-import type { Action } from '../store';
-import type { AppState } from '../types';
+import { Action } from '../store';
 
 interface Props {
-  state: AppState;
+  notes: string;
   dispatch: (a: Action) => void;
 }
 
-/**
- * Notes pane — chhoti editable file jo har request ke saath AI ko jaati hai.
- * "Atak gaya" wale buttons yahan entries likhte hain.
- */
-export default function NotesPane({ state, dispatch }: Props) {
-  const lines = state.notes.split('\n').filter((l) => l.trim());
+const QUICK_CHIPS = [
+  'Pehle meaning/problem batao, definition sabse last me',
+  '2+2 se shuru karke 20+20 pe le jao',
+  'Har baar naya real-world example do',
+  'Chhote 3-4 line ke steps me samjhao',
+];
+
+export function NotesPane({ notes, dispatch }: Props) {
+  const addChip = (line: string) => {
+    const cur = notes.trim();
+    if (cur.includes(line)) return;
+    dispatch({ t: 'notes', value: cur ? `${cur}\n• ${line}` : `• ${line}` });
+  };
 
   return (
-    <div className="pane">
-      <div className="notes">
-        <div className="hint">
-          Ye file har AI request ke saath jaati hai (max ~600 chars). Jo yahan likhoge, AI usi hisaab se
-          padhayega. Buttons (<i>Atak gaya, Bhaari ho gaya…</i>) khud entries daalte hain — tu edit/delete
-          kar sakta hai.
-        </div>
-        <textarea
-          value={state.notes}
-          placeholder={'Example:\nDefinition pehle se dikkat, analogy chalta hai\nHar jawab 3-4 line\nExample hamesha naya'}
-          onChange={(e) => dispatch({ t: 'notes', value: e.target.value })}
-        />
-        <div className="muted">
-          {lines.length} line{lines.length === 1 ? '' : 's'} · {state.notes.length}/600 chars AI tak jayenge
-          {lines.length > 0 && (
-            <>
-              {' '}
-              ·{' '}
-              <button
-                style={{ padding: '2px 8px', fontSize: 11 }}
-                onClick={() => {
-                  if (confirm('Saari notes entries delete kar dein?')) dispatch({ t: 'notes', value: '' });
-                }}
-              >
-                Clear
-              </button>
-            </>
+    <div className="pane notes-pane">
+      <div className="notes-card">
+        <div className="notes-head">
+          <div>
+            <div className="brain-title">Personal Memory Notes</div>
+            <div className="brain-sub">Jo yahan likhoge, AI har chat me yaad rakhega</div>
+          </div>
+          {notes.trim() && (
+            <button className="btn sm" onClick={() => dispatch({ t: 'notes', value: '' })}>
+              Clear
+            </button>
           )}
         </div>
+
+        <div className="chip-row">
+          {QUICK_CHIPS.map((c) => (
+            <button key={c} className="chip-btn" onClick={() => addChip(c)}>
+              + {c}
+            </button>
+          ))}
+        </div>
+
+        <textarea
+          className="notes-area"
+          value={notes}
+          onChange={(e) => dispatch({ t: 'notes', value: e.target.value })}
+          placeholder="Apni learning style, goals, ya weak points yahan likho…"
+        />
       </div>
     </div>
   );

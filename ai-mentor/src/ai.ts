@@ -1,4 +1,5 @@
 import type { Provider } from './types';
+import { LocalAi, isAndroidApp } from './localAi';
 
 export class AiError extends Error {
   status: number;
@@ -25,12 +26,97 @@ function headers(p: Provider): Record<string, string> {
   return h;
 }
 
-/** OpenAI-compatible streaming — Ollama, LM Studio, Gemini-compat, custom sab yahin se */
+/** In-app Offline GGUF generator (Capacitor LocalAi JNI bridge) */
+async function* streamGguf(
+  messages: ChatMsg[],
+  signal?: AbortSignal,
+): AsyncGenerator<string> {
+  if (!isAndroidApp()) {
+    throw new AiError(0, 'Offline GGUF sirf Android APK me chalta hai — web pe API key ya Ollama use karo.');
+  }
+  const sys = messages.find((m) => m.role === 'system')?.content ?? '';
+  const convo = messages
+    .filter((m) => m.role !== 'system')
+    .map((m) => (m.role === 'user' ? `User: ${m.content}` : `Assistant: ${m.content}`))
+    .join('\n');
+
+  const queue: string[] = [];
+  let prevLen = 0;
+  let done = false;
+  let errMsg = '';
+  let notify: (() => void) | null = null;
+
+  const wake = () => {
+    if (notify) {
+      const fn = notify;
+      notify = null;
+      fn();
+    }
+  };
+
+  const sub = await LocalAi.addListener('token', (ev) => {
+    const full = ev.text ?? '';
+    if (full.length > prevLen) {
+      queue.push(full.slice(prevLen));
+      prevLen = full.length;
+      wake();
+    }
+  });
+
+  const onAbort = () => {
+    LocalAi.stop().catch(() => {});
+  };
+  signal?.addEventListener('abort', onAbort);
+
+  LocalAi.generate({ system: sys, user: convo })
+    .then((res) => {
+      const full = res.text ?? '';
+      if (full.length > prevLen) {
+        queue.push(full.slice(prevLen));
+        prevLen = full.length;
+      }
+      done = true;
+      wake();
+    })
+    .catch((e) => {
+      errMsg = e instanceof Error ? e.message : String(e);
+      done = true;
+      wake();
+    });
+
+  try {
+    while (true) {
+      while (queue.length > 0) {
+        yield queue.shift()!;
+      }
+      if (done) {
+        if (errMsg) throw new AiError(0, errMsg);
+        return;
+      }
+      await new Promise<void>((r) => {
+        notify = r;
+      });
+    }
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    await sub.remove().catch(() => {});
+  }
+}
+
+/**
+ * OpenAI-compatible streaming + Offline GGUF in-app engine —
+ * Gemini, Groq, OpenRouter, OpenAI, Ollama, LM Studio, aur Offline .gguf sab yahin se.
+ */
 export async function* streamChat(
   p: Provider,
   messages: ChatMsg[],
   signal?: AbortSignal,
 ): AsyncGenerator<string> {
+  if (p.kind === 'gguf' || p.baseUrl.startsWith('local://')) {
+    yield* streamGguf(messages, signal);
+    return;
+  }
+
   const res = await fetch(endpoint(p), {
     method: 'POST',
     headers: headers(p),
@@ -81,6 +167,14 @@ export async function* streamChat(
 
 /** Settings ka Test button — chhota ping */
 export async function ping(p: Provider, signal?: AbortSignal): Promise<number> {
+  if (p.kind === 'gguf' || p.baseUrl.startsWith('local://')) {
+    if (!isAndroidApp()) throw new AiError(0, 'Offline GGUF sirf Android APK me chalta hai');
+    const st = await LocalAi.status();
+    if (!st.loaded) {
+      throw new AiError(0, st.models.length ? 'Model select karke Load dabao' : 'Pehle .gguf file import ya download karo');
+    }
+    return 200;
+  }
   const res = await fetch(endpoint(p), {
     method: 'POST',
     headers: headers(p),

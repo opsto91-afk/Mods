@@ -1,10 +1,12 @@
 import { useEffect, useReducer } from 'react';
 import {
   AppState,
+  MindProfile,
   Msg,
   Pane,
   Settings,
   Topic,
+  defaultProviders,
   initialState,
   uid,
 } from './types';
@@ -22,6 +24,8 @@ export type Action =
   | { t: 'setTopicMsgs'; topicId: string; msgs: Msg[] }
   | { t: 'notes'; value: string }
   | { t: 'xray'; value: string }
+  | { t: 'addProfile'; profile: MindProfile }
+  | { t: 'delProfile'; id: string }
   | { t: 'usage'; chars: number; requests: number }
   | { t: 'hydrate'; state: AppState };
 
@@ -86,6 +90,14 @@ export function reducer(s: AppState, a: Action): AppState {
       return { ...s, notes: a.value };
     case 'xray':
       return { ...s, xray: a.value };
+    case 'addProfile':
+      return {
+        ...s,
+        profiles: [a.profile, ...(s.profiles ?? [])],
+        xray: `${a.profile.archetype} — ${a.profile.summary} | Traits: ${a.profile.traits.join(', ')}`,
+      };
+    case 'delProfile':
+      return { ...s, profiles: (s.profiles ?? []).filter((p) => p.id !== a.id) };
     case 'usage':
       return {
         ...s,
@@ -102,13 +114,20 @@ function load(): AppState {
     if (!raw) return initialState();
     const parsed = JSON.parse(raw) as AppState;
     if (!parsed.topics?.length) return initialState();
-    // purane format me koi missing field ho to default se bhar do
     const base = initialState();
+    // merge providers so newly added built-ins (gguf, groq) appear even on old saves
+    const savedList = parsed.settings?.providers ?? [];
+    const byId = new Map(savedList.map((p) => [p.id, p]));
+    const mergedProviders = defaultProviders().map((d) => byId.get(d.id) ?? d);
+    for (const sp of savedList) {
+      if (!mergedProviders.some((m) => m.id === sp.id)) mergedProviders.push(sp);
+    }
     return {
       ...base,
       ...parsed,
-      settings: { ...base.settings, ...parsed.settings },
+      settings: { ...base.settings, ...parsed.settings, providers: mergedProviders },
       xray: parsed.xray ?? '',
+      profiles: parsed.profiles ?? [],
       usage: parsed.usage ?? base.usage,
     };
   } catch {
