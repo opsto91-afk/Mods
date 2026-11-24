@@ -89,7 +89,10 @@ jobs:
       - name: Publish APK to apk-output branch
         run: |
           set -euo pipefail
+          # NOTE: defaults.run.working-directory = ai-mentor — pehle repo root pe jao
+          cd "$GITHUB_WORKSPACE"
           APK="ai-mentor/android/app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
           cp "$APK" /tmp/app-debug.apk
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
