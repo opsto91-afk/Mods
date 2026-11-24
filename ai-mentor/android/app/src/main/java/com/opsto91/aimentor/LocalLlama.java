@@ -203,7 +203,7 @@ public final class LocalLlama {
             if (cb != null) cb.onStatus(status);
             return base;
         }
-        File part = new File(target.path + ".part");
+        File part = new File(target.getPath() + ".part");
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
         conn.setConnectTimeout(30000);
         conn.setReadTimeout(120000);
